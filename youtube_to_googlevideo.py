@@ -19,6 +19,7 @@ EPG_URL = ",".join([
     "https://iptv-org.github.io/epg/guides/us.xml"
 ])
 
+# IDs oficiales de IPTV-org
 EPG_IDS = {
     "TN": "tn.ar",
     "C5N": "c5n.ar",
@@ -31,6 +32,15 @@ EPG_IDS = {
     "Quiero Musica": "quieromusica.ar",
     "Pokemon Kids TV": "pokemontv.us"
 }
+
+# Lista fija como fallback
+FALLBACK_INSTANCES = [
+    "https://inv.nadeko.net",
+    "https://yewtu.be",
+    "https://vid.puffyan.us",
+    "https://inv.tux.pizza",
+    "https://invidious.snopyta.org"
+]
 
 def get_invidious_instances():
     try:
@@ -46,10 +56,14 @@ def get_invidious_instances():
                     instances.append(f"https://{domain}")
         return instances
     except Exception as e:
-        print(f"[ERROR] No se pudo obtener la lista de instancias: {e}")
+        print(f"[WARN] No se pudo obtener instancias desde la API: {e}")
         return []
 
 instances = get_invidious_instances()
+if not instances:
+    print("[WARN] Usando lista fija de instancias...")
+    instances = FALLBACK_INSTANCES
+
 if not instances:
     print("[ERROR] No hay instancias disponibles de Invidious.")
     sys.exit(1)
