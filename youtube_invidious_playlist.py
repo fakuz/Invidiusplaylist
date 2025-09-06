@@ -3,6 +3,7 @@ import os
 import random
 import requests
 import sys
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
 INPUT_FILE = "links.txt"
@@ -10,6 +11,7 @@ OUTPUT_FILE = "playlist.m3u"
 RAW_LINKS_FILE = "raw_links.txt"
 MAX_THREADS = os.cpu_count() * 2
 INSTANCES_API = "https://api.invidious.io/instances.json?pretty=1"
+EPG_URL = "https://iptv-org.github.io/epg/guides/ar.xml"
 
 def get_invidious_instances():
     try:
@@ -49,6 +51,11 @@ print(f"[INFO] Procesando {len(links)} enlaces usando {MAX_THREADS} hilos...")
 results = []
 raw_links = []
 
+def normalize_tvg_id(name):
+    nfkd = unicodedata.normalize('NFKD', name)
+    no_accents = "".join([c for c in nfkd if not unicodedata.combining(c)])
+    return no_accents.lower().replace(" ", "").replace("+", "").replace("&", "")
+
 def extract_video_id(url):
     if "watch?v=" in url:
         return url.split("watch?v=")[-1].split("&")[0]
@@ -80,7 +87,9 @@ def fetch_stream_info(entry):
         thumbnails = data.get("videoThumbnails", [])
         logo = thumbnails[-1]["url"] if thumbnails else ""
 
-        m3u_entry = f'#EXTINF:-1 group-title="{category}" tvg-logo="{logo}", {name}\n{hls_url}'
+        tvg_id = normalize_tvg_id(name)
+        m3u_entry = (f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" group-title="{category}" '
+                     f'tvg-logo="{logo}", {name}\n{hls_url}')
         raw_entry = f"{name} | {hls_url}"
         return m3u_entry, raw_entry
 
@@ -99,7 +108,7 @@ with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
 
 if results:
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write("#EXTM3U\n" + "\n".join(results))
+        f.write(f'#EXTM3U url-tvg="{EPG_URL}"\n' + "\n".join(results))
     with open(RAW_LINKS_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(raw_links))
     print(f"[INFO] Playlist generada: {OUTPUT_FILE} ({len(results)} canales)")
