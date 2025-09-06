@@ -4,18 +4,25 @@ import random
 import requests
 import sys
 import unicodedata
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 INPUT_FILE = "links.txt"
 OUTPUT_FILE = "playlist.m3u"
 RAW_LINKS_FILE = "raw_links.txt"
-MAX_THREADS = 4  # Limitamos a 4 para evitar 429 en GitHub Actions
+MAX_THREADS = 4  # Limitado para evitar rate-limit
 
-# Instancias fijas estables (sin redirect)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
+    "Accept": "application/json"
+}
+
 INSTANCES = [
     "https://inv.tux.pizza",
     "https://yewtu.be",
-    "https://vid.puffyan.us"
+    "https://vid.puffyan.us",
+    "https://invidious.flokinet.to",
+    "https://inv.in.projectsegfau.lt"
 ]
 
 EPG_URL = ",".join([
@@ -25,7 +32,6 @@ EPG_URL = ",".join([
     "https://iptv-org.github.io/epg/guides/us.xml"
 ])
 
-# IDs oficiales de IPTV-org
 EPG_IDS = {
     "TN": "tn.ar",
     "C5N": "c5n.ar",
@@ -75,32 +81,31 @@ def fetch_stream_info(entry):
     if not video_id:
         return f"[ERROR] No se pudo extraer ID del video: {url}", None
 
-    # Probamos con todas las instancias si la primera falla
-    for instance in INSTANCES:
-        api_url = f"{instance}/api/v1/videos/{video_id}"
-        try:
-            resp = requests.get(api_url, timeout=10, allow_redirects=False)
-            if resp.status_code == 200:
-                data = resp.json()
-                hls_url = data.get("hlsUrl")
-                if not hls_url:
-                    return f"[WARN] {name} -> No tiene HLS disponible", None
+    # Reintentos con backoff
+    for attempt in range(3):
+        for instance in INSTANCES:
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            try:
+                resp = requests.get(api_url, headers=HEADERS, timeout=10, allow_redirects=False)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    hls_url = data.get("hlsUrl")
+                    if not hls_url:
+                        return f"[WARN] {name} -> No tiene HLS disponible", None
 
-                thumbnails = data.get("videoThumbnails", [])
-                logo = thumbnails[-1]["url"] if thumbnails else ""
+                    thumbnails = data.get("videoThumbnails", [])
+                    logo = thumbnails[-1]["url"] if thumbnails else ""
 
-                tvg_id = EPG_IDS.get(name, normalize_tvg_id(name))
-                m3u_entry = (f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" group-title="{category}" '
-                             f'tvg-logo="{logo}", {name}\n{hls_url}')
-                raw_entry = f"{name} | {hls_url}"
-                return m3u_entry, raw_entry
-            else:
-                if resp.status_code in [429, 502, 403]:
+                    tvg_id = EPG_IDS.get(name, normalize_tvg_id(name))
+                    m3u_entry = (f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" group-title="{category}" '
+                                 f'tvg-logo="{logo}", {name}\n{hls_url}')
+                    raw_entry = f"{name} | {hls_url}"
+                    return m3u_entry, raw_entry
+                elif resp.status_code in [429, 502, 403]:
                     continue  # probar otra instancia
-                return f"[ERROR] {name} -> API error {resp.status_code}", None
-        except Exception as e:
-            continue  # probar siguiente instancia
-
+            except:
+                continue
+        time.sleep(2 * (attempt + 1))  # backoff incremental
     return f"[ERROR] {name} -> Todas las instancias fallaron", None
 
 with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
