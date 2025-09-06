@@ -1,20 +1,19 @@
-name: Update IPTV Playlist (Invidious)
+name: Auto-update Playlist
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *"  # Cada 6 horas
   workflow_dispatch:
 
 jobs:
-  update-playlist:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
@@ -23,29 +22,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run IPTV Script
+      - name: Ejecutar script
         run: |
-          echo "[INFO] Generando playlist con Invidious..."
-          python youtube_invidious_playlist.py
+          echo "[INFO] Ejecutando generación de playlist..."
+          python youtube_to_googlevideo.py
 
-      - name: Validate playlist before commit
+      - name: Commit & Push cambios
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ ! -s playlist.m3u ]; then
-            echo "[ERROR] Playlist vacía. No se subirá nada."
-            exit 1
-          fi
-          if ! grep -q "http" playlist.m3u; then
-            echo "[ERROR] Playlist inválida. No contiene enlaces."
-            exit 1
-          fi
-
-      - name: Commit and Push changes
-        run: |
-          git config --global user.name "github-actions"
+          git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           git add playlist.m3u raw_links.txt
-          if git diff --cached --quiet; then
-            echo "[INFO] No hay cambios para commitear."
-          else
-            git commit -m "Auto-update playlist [skip ci]"
-            git push
+          git commit -m "Auto-update playlist" || echo "Sin cambios"
+          git push
