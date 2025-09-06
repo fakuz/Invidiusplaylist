@@ -1,7 +1,8 @@
-services:
+sservices:
   - type: web
-    name: iptv-playlist
+    name: invidiusplaylist
     env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python app.py"
+    region: oregon
     plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT"
