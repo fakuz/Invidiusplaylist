@@ -10,8 +10,27 @@ INPUT_FILE = "links.txt"
 OUTPUT_FILE = "playlist.m3u"
 RAW_LINKS_FILE = "raw_links.txt"
 MAX_THREADS = os.cpu_count() * 2
+
 INSTANCES_API = "https://api.invidious.io/instances.json?pretty=1"
-EPG_URL = "https://iptv-org.github.io/epg/guides/ar.xml"
+EPG_URL = ",".join([
+    "https://iptv-org.github.io/epg/guides/ar.xml",
+    "https://iptv-org.github.io/epg/guides/es.xml",
+    "https://iptv-org.github.io/epg/guides/mx.xml",
+    "https://iptv-org.github.io/epg/guides/us.xml"
+])
+
+EPG_IDS = {
+    "TN": "tn.ar",
+    "C5N": "c5n.ar",
+    "LN+": "lnmas.ar",
+    "Cronica TV": "cronica.ar",
+    "A24": "a24.ar",
+    "Canal 26": "canal26.ar",
+    "DW Español": "dwespanol.de",
+    "IP Noticias": "ipnoticias.ar",
+    "Quiero Musica": "quieromusica.ar",
+    "Pokemon Kids TV": "pokemontv.us"
+}
 
 def get_invidious_instances():
     try:
@@ -87,7 +106,7 @@ def fetch_stream_info(entry):
         thumbnails = data.get("videoThumbnails", [])
         logo = thumbnails[-1]["url"] if thumbnails else ""
 
-        tvg_id = normalize_tvg_id(name)
+        tvg_id = EPG_IDS.get(name, normalize_tvg_id(name))
         m3u_entry = (f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" group-title="{category}" '
                      f'tvg-logo="{logo}", {name}\n{hls_url}')
         raw_entry = f"{name} | {hls_url}"
