@@ -1,129 +1,99 @@
 #!/usr/bin/env python3
-import os
-import random
 import requests
-import sys
-import unicodedata
-import time
-from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
+import os
 
+# ============ CONFIG ==============
 INPUT_FILE = "links.txt"
 OUTPUT_FILE = "playlist.m3u"
 RAW_LINKS_FILE = "raw_links.txt"
-MAX_THREADS = 4  # Limitado para evitar rate-limit
+THREADS = os.cpu_count() * 2  # Hiperthreading
+EPG_URLS = "https://iptv-org.github.io/epg/guides/ar.xml,https://iptv-org.github.io/epg/guides/es.xml"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
-    "Accept": "application/json"
-}
-
-INSTANCES = [
-    "https://inv.tux.pizza",
-    "https://yewtu.be",
-    "https://vid.puffyan.us",
-    "https://invidious.flokinet.to",
-    "https://inv.in.projectsegfau.lt"
+# Instancias Piped
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.syncpundit.io",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.jae.fi"
 ]
 
-EPG_URL = ",".join([
-    "https://iptv-org.github.io/epg/guides/ar.xml",
-    "https://iptv-org.github.io/epg/guides/es.xml",
-    "https://iptv-org.github.io/epg/guides/mx.xml",
-    "https://iptv-org.github.io/epg/guides/us.xml"
-])
+# =================================
 
-EPG_IDS = {
-    "TN": "tn.ar",
-    "C5N": "c5n.ar",
-    "LN+": "lnmas.ar",
-    "Cronica TV": "cronica.ar",
-    "A24": "a24.ar",
-    "Canal 26": "canal26.ar",
-    "DW Español": "dwespanol.de",
-    "IP Noticias": "ipnoticias.ar",
-    "Quiero Musica": "quieromusica.ar",
-    "Pokemon Kids TV": "pokemontv.us"
-}
-
-if not os.path.exists(INPUT_FILE):
-    print(f"[ERROR] No se encontró {INPUT_FILE}.")
-    sys.exit(1)
-
-with open(INPUT_FILE, "r", encoding="utf-8") as f:
-    links = [line.strip() for line in f if line.strip()]
-
-if not links:
-    print("[ERROR] El archivo de enlaces está vacío.")
-    sys.exit(1)
-
-print(f"[INFO] Procesando {len(links)} enlaces usando {MAX_THREADS} hilos...")
-
-results = []
-raw_links = []
-
-def normalize_tvg_id(name):
-    nfkd = unicodedata.normalize('NFKD', name)
-    no_accents = "".join([c for c in nfkd if not unicodedata.combining(c)])
-    return no_accents.lower().replace(" ", "").replace("+", "").replace("&", "")
-
-def extract_video_id(url):
-    if "watch?v=" in url:
-        return url.split("watch?v=")[-1].split("&")[0]
+def get_video_id(url):
+    if "v=" in url:
+        return url.split("v=")[1].split("&")[0]
     return None
 
-def fetch_stream_info(entry):
-    try:
-        url, category, name = entry.split("|")
-    except ValueError:
-        return f"[ERROR] Formato incorrecto: {entry}", None
+def fetch_stream(video_id):
+    for instance in PIPED_INSTANCES:
+        try:
+            api_url = f"{instance}/streams/{video_id}"
+            resp = requests.get(api_url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Buscar HLS
+                if data.get("hls"):
+                    return data["title"], data.get("uploader"), data["hls"], data.get("thumbnailUrl")
+                # Fallback: mejor videoStream (1080p si existe)
+                streams = data.get("videoStreams", [])
+                if streams:
+                    best = sorted(streams, key=lambda x: x.get("quality", ""), reverse=True)[0]
+                    return data["title"], data.get("uploader"), best["url"], data.get("thumbnailUrl")
+        except Exception as e:
+            continue
+    return None
 
-    video_id = extract_video_id(url)
+def process_link(line):
+    parts = line.strip().split("|")
+    if len(parts) < 3:
+        return None
+    url, category, name = parts
+    video_id = get_video_id(url)
     if not video_id:
-        return f"[ERROR] No se pudo extraer ID del video: {url}", None
+        return None
+    result = fetch_stream(video_id)
+    if result:
+        title, uploader, stream_url, logo = result
+        return {
+            "name": name,
+            "category": category,
+            "title": title,
+            "uploader": uploader,
+            "stream": stream_url,
+            "logo": logo
+        }
+    return None
 
-    # Reintentos con backoff
-    for attempt in range(3):
-        for instance in INSTANCES:
-            api_url = f"{instance}/api/v1/videos/{video_id}"
-            try:
-                resp = requests.get(api_url, headers=HEADERS, timeout=10, allow_redirects=False)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    hls_url = data.get("hlsUrl")
-                    if not hls_url:
-                        return f"[WARN] {name} -> No tiene HLS disponible", None
+def main():
+    if not os.path.exists(INPUT_FILE):
+        print("[ERROR] No se encontró links.txt")
+        return
 
-                    thumbnails = data.get("videoThumbnails", [])
-                    logo = thumbnails[-1]["url"] if thumbnails else ""
+    with open(INPUT_FILE, "r", encoding="utf-8") as f:
+        links = [l.strip() for l in f if l.strip()]
 
-                    tvg_id = EPG_IDS.get(name, normalize_tvg_id(name))
-                    m3u_entry = (f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" group-title="{category}" '
-                                 f'tvg-logo="{logo}", {name}\n{hls_url}')
-                    raw_entry = f"{name} | {hls_url}"
-                    return m3u_entry, raw_entry
-                elif resp.status_code in [429, 502, 403]:
-                    continue  # probar otra instancia
-            except:
-                continue
-        time.sleep(2 * (attempt + 1))  # backoff incremental
-    return f"[ERROR] {name} -> Todas las instancias fallaron", None
+    print(f"[INFO] Procesando {len(links)} enlaces usando {THREADS} hilos...")
 
-with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-    future_to_link = {executor.submit(fetch_stream_info, entry): entry for entry in links}
-    for future in future_to_link:
-        result, raw = future.result()
-        if raw:
-            results.append(result)
-            raw_links.append(raw)
-        else:
-            print(result)
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=THREADS) as executor:
+        for res in executor.map(process_link, links):
+            if res:
+                results.append(res)
 
-if results:
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write(f'#EXTM3U url-tvg="{EPG_URL}"\n' + "\n".join(results))
-    with open(RAW_LINKS_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(raw_links))
-    print(f"[INFO] Playlist generada: {OUTPUT_FILE} ({len(results)} canales)")
-    print(f"[INFO] Enlaces directos guardados en: {RAW_LINKS_FILE}")
-else:
-    print("[WARN] No se generó contenido. Playlist vacía.")
+    if not results:
+        print("[WARN] No se generó contenido. Playlist vacía.")
+        return
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as m3u, open(RAW_LINKS_FILE, "w", encoding="utf-8") as raw:
+        m3u.write(f'#EXTM3U url-tvg="{EPG_URLS}"\n')
+        for item in results:
+            m3u.write(f'#EXTINF:-1 group-title="{item["category"]}" tvg-logo="{item["logo"]}", {item["name"]}\n')
+            m3u.write(f'{item["stream"]}\n')
+            raw.write(f'{item["stream"]}\n')
+
+    print(f"[OK] Playlist generada: {OUTPUT_FILE}")
+    print(f"[OK] Enlaces directos guardados en: {RAW_LINKS_FILE}")
+
+if __name__ == "__main__":
+    main()
