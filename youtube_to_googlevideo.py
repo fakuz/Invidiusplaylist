@@ -1,99 +1,103 @@
-#!/usr/bin/env python3
 import requests
 import concurrent.futures
+import time
 import os
 
-# ============ CONFIG ==============
+# ==================== CONFIG ====================
 INPUT_FILE = "links.txt"
 OUTPUT_FILE = "playlist.m3u"
 RAW_LINKS_FILE = "raw_links.txt"
-THREADS = os.cpu_count() * 2  # Hiperthreading
-EPG_URLS = "https://iptv-org.github.io/epg/guides/ar.xml,https://iptv-org.github.io/epg/guides/es.xml"
+MAX_WORKERS = 8  # Hiperthreading activado
+TIMEOUT = 12
+MAX_RETRIES = 3
 
-# Instancias Piped
+# Instancias Piped (ordenadas por estabilidad)
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
-    "https://pipedapi.syncpundit.io",
     "https://pipedapi.adminforge.de",
-    "https://pipedapi.jae.fi"
+    "https://pipedapi.syncpundit.io",
+    "https://pipedapi.garudalinux.org",
+    "https://pipedapi.in.projectsegfau.lt",
 ]
 
-# =================================
+# EPG recomendado
+EPG_URLS = [
+    "https://iptv-org.github.io/epg/guides/ar.xml",
+    "https://iptv-org.github.io/epg/guides/es.xml"
+]
 
-def get_video_id(url):
-    if "v=" in url:
-        return url.split("v=")[1].split("&")[0]
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"
+}
+
+# ==================== FUNCIONES ====================
+def obtener_info(video_id):
+    """Intenta obtener info del video desde varias instancias Piped."""
+    for instancia in PIPED_INSTANCES:
+        url = f"{instancia}/streams/{video_id}"
+        for intento in range(1, MAX_RETRIES + 1):
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if "hls" in data and data["hls"]:
+                        return {
+                            "title": data.get("title", "Sin título"),
+                            "thumbnail": data.get("thumbnailUrl", ""),
+                            "hls": data["hls"]
+                        }
+                    else:
+                        print(f"[WARN] {video_id} sin HLS en {instancia}")
+                        break
+                else:
+                    print(f"[ERROR] {video_id} -> HTTP {resp.status_code} en {instancia} (intento {intento})")
+            except Exception as e:
+                print(f"[ERROR] {video_id} -> {instancia} fallo ({e}) intento {intento}")
+            time.sleep(1)
     return None
 
-def fetch_stream(video_id):
-    for instance in PIPED_INSTANCES:
-        try:
-            api_url = f"{instance}/streams/{video_id}"
-            resp = requests.get(api_url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                # Buscar HLS
-                if data.get("hls"):
-                    return data["title"], data.get("uploader"), data["hls"], data.get("thumbnailUrl")
-                # Fallback: mejor videoStream (1080p si existe)
-                streams = data.get("videoStreams", [])
-                if streams:
-                    best = sorted(streams, key=lambda x: x.get("quality", ""), reverse=True)[0]
-                    return data["title"], data.get("uploader"), best["url"], data.get("thumbnailUrl")
-        except Exception as e:
-            continue
+def procesar_linea(linea):
+    """Procesa cada línea del archivo links.txt"""
+    try:
+        url, categoria, nombre = linea.strip().split("|")
+        video_id = url.split("v=")[-1]
+        info = obtener_info(video_id)
+        if info:
+            return f'#EXTINF:-1 group-title="{categoria}" tvg-logo="{info["thumbnail"]}", {nombre}\n{info["hls"]}\n', info["hls"]
+        else:
+            print(f"[ERROR] {nombre} -> Todas las instancias fallaron")
+    except Exception as e:
+        print(f"[ERROR] Línea inválida: {linea} ({e})")
     return None
 
-def process_link(line):
-    parts = line.strip().split("|")
-    if len(parts) < 3:
-        return None
-    url, category, name = parts
-    video_id = get_video_id(url)
-    if not video_id:
-        return None
-    result = fetch_stream(video_id)
-    if result:
-        title, uploader, stream_url, logo = result
-        return {
-            "name": name,
-            "category": category,
-            "title": title,
-            "uploader": uploader,
-            "stream": stream_url,
-            "logo": logo
-        }
-    return None
-
-def main():
+# ==================== MAIN ====================
+if __name__ == "__main__":
     if not os.path.exists(INPUT_FILE):
-        print("[ERROR] No se encontró links.txt")
-        return
+        print(f"[ERROR] No se encontró {INPUT_FILE}")
+        exit(1)
 
     with open(INPUT_FILE, "r", encoding="utf-8") as f:
-        links = [l.strip() for l in f if l.strip()]
+        links = [line.strip() for line in f if line.strip()]
 
-    print(f"[INFO] Procesando {len(links)} enlaces usando {THREADS} hilos...")
+    print(f"[INFO] Procesando {len(links)} enlaces usando {MAX_WORKERS} hilos...")
 
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=THREADS) as executor:
-        for res in executor.map(process_link, links):
-            if res:
-                results.append(res)
+    playlist = [f'#EXTM3U url-tvg="{",".join(EPG_URLS)}"\n']
+    raw_links = []
 
-    if not results:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        resultados = executor.map(procesar_linea, links)
+
+    for resultado in resultados:
+        if resultado:
+            extinf, raw = resultado
+            playlist.append(extinf)
+            raw_links.append(raw)
+
+    if len(playlist) > 1:
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            f.writelines(playlist)
+        with open(RAW_LINKS_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(raw_links))
+        print(f"[OK] Playlist generada con {len(raw_links)} canales -> {OUTPUT_FILE}")
+    else:
         print("[WARN] No se generó contenido. Playlist vacía.")
-        return
-
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as m3u, open(RAW_LINKS_FILE, "w", encoding="utf-8") as raw:
-        m3u.write(f'#EXTM3U url-tvg="{EPG_URLS}"\n')
-        for item in results:
-            m3u.write(f'#EXTINF:-1 group-title="{item["category"]}" tvg-logo="{item["logo"]}", {item["name"]}\n')
-            m3u.write(f'{item["stream"]}\n')
-            raw.write(f'{item["stream"]}\n')
-
-    print(f"[OK] Playlist generada: {OUTPUT_FILE}")
-    print(f"[OK] Enlaces directos guardados en: {RAW_LINKS_FILE}")
-
-if __name__ == "__main__":
-    main()
