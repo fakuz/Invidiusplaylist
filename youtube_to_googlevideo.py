@@ -9,9 +9,15 @@ from concurrent.futures import ThreadPoolExecutor
 INPUT_FILE = "links.txt"
 OUTPUT_FILE = "playlist.m3u"
 RAW_LINKS_FILE = "raw_links.txt"
-MAX_THREADS = os.cpu_count() * 2
+MAX_THREADS = 4  # Limitamos a 4 para evitar 429 en GitHub Actions
 
-INSTANCES_API = "https://api.invidious.io/instances.json?pretty=1"
+# Instancias fijas estables (sin redirect)
+INSTANCES = [
+    "https://inv.tux.pizza",
+    "https://yewtu.be",
+    "https://vid.puffyan.us"
+]
+
 EPG_URL = ",".join([
     "https://iptv-org.github.io/epg/guides/ar.xml",
     "https://iptv-org.github.io/epg/guides/es.xml",
@@ -32,41 +38,6 @@ EPG_IDS = {
     "Quiero Musica": "quieromusica.ar",
     "Pokemon Kids TV": "pokemontv.us"
 }
-
-# Lista fija como fallback
-FALLBACK_INSTANCES = [
-    "https://inv.nadeko.net",
-    "https://yewtu.be",
-    "https://vid.puffyan.us",
-    "https://inv.tux.pizza",
-    "https://invidious.snopyta.org"
-]
-
-def get_invidious_instances():
-    try:
-        resp = requests.get(INSTANCES_API, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        instances = []
-        for item in data:
-            if isinstance(item, list) and len(item) >= 2:
-                domain = item[0]
-                features = item[1]
-                if features.get("api", False) and not features.get("dead", False):
-                    instances.append(f"https://{domain}")
-        return instances
-    except Exception as e:
-        print(f"[WARN] No se pudo obtener instancias desde la API: {e}")
-        return []
-
-instances = get_invidious_instances()
-if not instances:
-    print("[WARN] Usando lista fija de instancias...")
-    instances = FALLBACK_INSTANCES
-
-if not instances:
-    print("[ERROR] No hay instancias disponibles de Invidious.")
-    sys.exit(1)
 
 if not os.path.exists(INPUT_FILE):
     print(f"[ERROR] No se encontró {INPUT_FILE}.")
@@ -104,30 +75,33 @@ def fetch_stream_info(entry):
     if not video_id:
         return f"[ERROR] No se pudo extraer ID del video: {url}", None
 
-    instance = random.choice(instances)
-    api_url = f"{instance}/api/v1/videos/{video_id}"
+    # Probamos con todas las instancias si la primera falla
+    for instance in INSTANCES:
+        api_url = f"{instance}/api/v1/videos/{video_id}"
+        try:
+            resp = requests.get(api_url, timeout=10, allow_redirects=False)
+            if resp.status_code == 200:
+                data = resp.json()
+                hls_url = data.get("hlsUrl")
+                if not hls_url:
+                    return f"[WARN] {name} -> No tiene HLS disponible", None
 
-    try:
-        resp = requests.get(api_url, timeout=10)
-        if resp.status_code != 200:
-            return f"[ERROR] {name} -> API error {resp.status_code}", None
+                thumbnails = data.get("videoThumbnails", [])
+                logo = thumbnails[-1]["url"] if thumbnails else ""
 
-        data = resp.json()
-        hls_url = data.get("hlsUrl")
-        if not hls_url:
-            return f"[WARN] {name} -> No tiene HLS disponible (¿no es un live stream?)", None
+                tvg_id = EPG_IDS.get(name, normalize_tvg_id(name))
+                m3u_entry = (f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" group-title="{category}" '
+                             f'tvg-logo="{logo}", {name}\n{hls_url}')
+                raw_entry = f"{name} | {hls_url}"
+                return m3u_entry, raw_entry
+            else:
+                if resp.status_code in [429, 502, 403]:
+                    continue  # probar otra instancia
+                return f"[ERROR] {name} -> API error {resp.status_code}", None
+        except Exception as e:
+            continue  # probar siguiente instancia
 
-        thumbnails = data.get("videoThumbnails", [])
-        logo = thumbnails[-1]["url"] if thumbnails else ""
-
-        tvg_id = EPG_IDS.get(name, normalize_tvg_id(name))
-        m3u_entry = (f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" group-title="{category}" '
-                     f'tvg-logo="{logo}", {name}\n{hls_url}')
-        raw_entry = f"{name} | {hls_url}"
-        return m3u_entry, raw_entry
-
-    except Exception as e:
-        return f"[ERROR] {name} -> {e}", None
+    return f"[ERROR] {name} -> Todas las instancias fallaron", None
 
 with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
     future_to_link = {executor.submit(fetch_stream_info, entry): entry for entry in links}
