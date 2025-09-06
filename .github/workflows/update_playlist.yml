@@ -1,38 +1,36 @@
-name: Auto-update Playlist
+name: Generar Playlist IPTV (Piped)
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: "0 */6 * * *"  # Cada 6 horas
-  workflow_dispatch:
 
 jobs:
-  build:
+  update-playlist:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Configurar Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
+      - name: Instalar dependencias
+        run: pip install requests
 
-      - name: Ejecutar script
+      - name: Generar Playlist
         run: |
           echo "[INFO] Ejecutando generación de playlist..."
           python youtube_to_googlevideo.py
 
-      - name: Commit & Push cambios
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit y Push
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           git add playlist.m3u raw_links.txt
-          git commit -m "Auto-update playlist" || echo "Sin cambios"
-          git push
+          git commit --amend -m "Auto-update playlist" || git commit -m "Auto-update playlist"
+          git push --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
