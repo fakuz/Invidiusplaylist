@@ -1,8 +1,19 @@
-sservices:
+services:
   - type: web
     name: invidiusplaylist
     env: python
-    region: oregon
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT"
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT app:app
+    autoDeploy: true
+    envVars:
+      - key: REFRESH_MINUTES
+        value: "180"     # cada 3 horas
+      - key: PLAYLIST_PATH
+        value: "/tmp/playlist.m3u"
+      - key: LINKS_FILE
+        value: "links.txt"
+      # Opcional: para /force-rebuild
+      # - key: FORCE_TOKEN
+      #   value: "un-secreto-largo"
