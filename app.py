@@ -1,28 +1,39 @@
 from flask import Flask, Response
+from apscheduler.schedulers.background import BackgroundScheduler
+import subprocess
 import os
 
 app = Flask(__name__)
+playlist_path = "playlist.m3u"
+
+def generar_playlist():
+    print("[INFO] Actualizando playlist...")
+    try:
+        subprocess.run(["python", "update_playlist.py"], check=True)
+        print("[INFO] Playlist actualizada correctamente.")
+    except Exception as e:
+        print(f"[ERROR] No se pudo actualizar la playlist: {e}")
+
+# Generar la playlist al inicio
+generar_playlist()
+
+# Programar actualización cada 30 minutos
+scheduler = BackgroundScheduler()
+scheduler.add_job(generar_playlist, "interval", minutes=30)
+scheduler.start()
 
 @app.route('/')
 def home():
-    return "Servidor IPTV funcionando en Render", 200
+    return "✅ IPTV Playlist funcionando en /playlist.m3u"
 
 @app.route('/playlist.m3u')
 def playlist():
-    if not os.path.exists('links.txt'):
-        return "Archivo links.txt no encontrado", 404
-
-    with open('links.txt', 'r') as f:
-        lines = f.readlines()
-
-    playlist = "#EXTM3U\n"
-    for line in lines:
-        line = line.strip()
-        if line:
-            url, name = line.split('|')[0], line.split('|')[-1]
-            playlist += f"#EXTINF:-1,{name}\n{url}\n"
-
-    return Response(playlist, mimetype='audio/mpegurl')
+    if os.path.exists(playlist_path):
+        with open(playlist_path, "r", encoding="utf-8") as f:
+            data = f.read()
+        return Response(data, mimetype="audio/x-mpegurl")
+    else:
+        return "Playlist no generada aún", 404
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
